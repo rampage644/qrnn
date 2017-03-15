@@ -4,6 +4,7 @@ import os
 
 import chainer
 import chainer.links as L
+import chainer.functions as F
 from chainer import training
 from chainer.training import extensions
 
@@ -13,7 +14,7 @@ import util.util as util
 
 
 class QRNNModel(chainer.Chain):
-    def __init__(self, vocab_size, out_size, hidden_size):
+    def __init__(self, vocab_size, out_size, hidden_size, dropout):
         super().__init__(
             layer1=QRNNLayer(out_size, hidden_size),
             layer2=QRNNLayer(hidden_size, hidden_size),
@@ -22,14 +23,26 @@ class QRNNModel(chainer.Chain):
             fc=L.Linear(None, 2)
         )
         self.embed = L.EmbedID(vocab_size, out_size)
+        self.dropout = dropout
+        self.train = True
 
     def __call__(self, x):
         h = self.embed(x)
-        h = self.layer1(h)
-        h = self.layer2(h)
-        h = self.layer3(h)
-        h = self.layer4(h)
+        h = F.dropout(self.layer1(h), self.dropout, self.train)
+        h = F.dropout(self.layer2(h), self.dropout, self.train)
+        h = F.dropout(self.layer3(h), self.dropout, self.train)
+        h = F.dropout(self.layer4(h), self.dropout, self.train)
         return self.fc(h)
+
+
+class TestModeEvaluator(extensions.Evaluator):
+
+    def evaluate(self):
+        model = self.get_target('main')
+        model.train = False
+        ret = super().evaluate()
+        model.train = True
+        return ret
 
 
 def parse_args():
@@ -56,17 +69,22 @@ def parse_args():
                         help='GloVe word embedding dimensions')
     parser.add_argument('--hidden_size', default=256, type=int,
                         help='Hidden layers dimensions')
+    parser.add_argument('--maxlen', default=400, type=int,
+                        help='Maximum sequence time (T) length')
+    parser.add_argument('--dropout', default=0.3, type=float,
+                        help='Dropout ratio between layers')
     return parser.parse_args()
 
 
 def main():
     args = parse_args()
 
-    train, test = IMDBDataset(os.path.join(args.dataset, 'train'), args.vocabulary),\
-                  IMDBDataset(os.path.join(args.dataset, 'test'), args.vocabulary)
+    train, test = IMDBDataset(os.path.join(args.dataset, 'train'), args.vocabulary, args.maxlen),\
+                  IMDBDataset(os.path.join(args.dataset, 'test'), args.vocabulary, args.maxlen)
 
 
-    model = L.Classifier(QRNNModel(args.vocab_size, args.out_size, args.hidden_size))
+    model = L.Classifier(QRNNModel(
+        args.vocab_size, args.out_size, args.hidden_size, args.dropout))
 
     if args.embeddings:
         model.predictor.embed.W.data = util.load_embeddings(
@@ -79,7 +97,7 @@ def main():
 
     optimizer = chainer.optimizers.RMSprop(lr=0.001, alpha=0.9)
     optimizer.setup(model)
-    optimizer.add_hook(chainer.optimizer.WeightDecay(5e-4))
+    optimizer.add_hook(chainer.optimizer.WeightDecay(1e-4))
 
     train_iter = chainer.iterators.SerialIterator(train, args.batchsize)
     test_iter = chainer.iterators.SerialIterator(test, args.batchsize,
@@ -88,7 +106,7 @@ def main():
     updater = training.StandardUpdater(train_iter, optimizer, device=args.gpu)
     trainer = training.Trainer(updater, (args.epoch, 'epoch'), out=args.out)
 
-    trainer.extend(extensions.Evaluator(test_iter, model, device=args.gpu))
+    trainer.extend(TestModeEvaluator(test_iter, model, device=args.gpu))
     trainer.extend(extensions.ExponentialShift('lr', 0.5),
                    trigger=(25, 'epoch'))
     trainer.extend(extensions.snapshot(), trigger=(args.epoch, 'epoch'))
