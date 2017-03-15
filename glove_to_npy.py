@@ -23,7 +23,9 @@ def main():
     data = {
         '': 0
     }
-    embeddings = []
+    embeddings = [
+        np.zeros((300), dtype=np.float32)
+    ]
 
     float_re = re.compile(' [-+]?[0-9]*\.?[0-9]+([eE][-+]?[0-9]+)?')
     # float_re = re.compile(' -?\d+\.\d+')
